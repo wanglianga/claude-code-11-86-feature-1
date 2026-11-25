@@ -27,7 +27,7 @@ public class SecurityConfig {
                 .userDetailsService(users)
                 .authorizeHttpRequests(reg -> reg
                         .requestMatchers("/", "/index.html", "/login.html", "/app.js",
-                                "/styles.css", "/favicon.ico", "/assets/**").permitAll()
+                                "/compliance.js", "/styles.css", "/favicon.ico", "/assets/**").permitAll()
                         .requestMatchers("/swagger-ui/**", "/swagger-ui.html",
                                 "/v3/api-docs/**", "/webjars/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/health").permitAll()

@@ -1,5 +1,6 @@
 package com.ccdev.transit.web;
 
+import com.ccdev.transit.service.ComplianceService;
 import com.ccdev.transit.service.ExpansionService;
 import com.ccdev.transit.service.PipelineService;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,11 +24,14 @@ public class PipelineController {
     private final JdbcTemplate jdbc;
     private final PipelineService pipeline;
     private final ExpansionService expansion;
+    private final ComplianceService compliance;
 
-    public PipelineController(JdbcTemplate jdbc, PipelineService pipeline, ExpansionService expansion) {
+    public PipelineController(JdbcTemplate jdbc, PipelineService pipeline, ExpansionService expansion,
+                              ComplianceService compliance) {
         this.jdbc = jdbc;
         this.pipeline = pipeline;
         this.expansion = expansion;
+        this.compliance = compliance;
     }
 
     // ---------------- 流水线 ----------------
@@ -35,12 +39,15 @@ public class PipelineController {
     @PostMapping("/pipeline/run")
     public Map<String, Object> runPipeline(@PathVariable long id) {
         pipeline.rebuildAll(id);
-        return Map.of("ok", true, "message", "暴露账、共同支持、分析结果与护栏已用冻结数据重新计算");
+        // 区段依从者特性：确定性重建资格账/轨迹并写回 CACE_SEGMENT 结果
+        compliance.rebuild(id);
+        return Map.of("ok", true, "message", "暴露账、共同支持、分析结果、护栏与区段依从者 CACE 已用冻结数据重新计算");
     }
 
     @PostMapping("/analysis/run")
     public Map<String, Object> runAnalysis(@PathVariable long id) {
         int n = pipeline.runAnalysis(id);
+        compliance.persistResults(id);
         return Map.of("ok", true, "resultRows", n);
     }
 
@@ -232,6 +239,8 @@ public class PipelineController {
                 FROM guardrail_evaluation WHERE experiment_id=?
                 ORDER BY id DESC
                 """, id));
+        bundle.put("complierReportPrimary", compliance.report(id, "PRIMARY"));
+        bundle.put("complierScenarioMatrix", compliance.bundle(id, "PRIMARY").get("scenario_diagnostics"));
         bundle.put("expansionDecisions", expansion.decisions(id));
         return bundle;
     }

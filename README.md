@@ -15,7 +15,8 @@
 6. **估计器**：乘客人数加权 Hajek **ITT**、按随机化单元聚类的 CR1 区间、CACE/Wald-IV、跨线暴露率 Wilson 区间、簇方案 2⁴ 随机化推断（RI）。
 7. **独立护栏**：投诉率、满载班次占比、滞留/未完成旅程占比；任一硬护栏超限即 `STOP_EXPANSION`，扩围结论 `BLOCKED`，服务端同时拒绝人工改判 `GO`。
 8. **外部事件按事件时间关联**：暴雨停运、降雨、施工、临时改线均带事件窗口；投诉同时保存 `complaint_time` 与 `service_event_time`，统计只用后者。
-9. **界面**：随机分配、暴露路径、共同支持、客流结果、护栏、离线审阅、扩围证据等 10 个标签页；另含 Swagger UI / OpenAPI 3。
+9. **界面**：随机分配、暴露路径、共同支持、客流结果、**区段依从者 CACE**、护栏、离线审阅、扩围证据等 **11 个标签页**；另含 Swagger UI / OpenAPI 3。
+10. **区段级依从者效应（本题新增）**：把临时改线/加班班次**按切点切为区段**，建立**分流资格账、区段执行轨迹、偏差原因图、单调性诊断**，并用 **Wald-IV** 与**主分层依从模型**两种方法估计**同一个“随机分流诱导依从者区段”人群**的候车效应及区间；弱工具、单调性反例（反向依从者）或模型无重叠时**拒绝估计**。
 
 ---
 
@@ -115,13 +116,15 @@ mvn test
 结果（最后一次实际运行）：
 
 ```
-Tests run: 16, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 21, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
 覆盖：50% 平衡分配与确定性哈希、R1/R2 聚类/R3 独立、全部命名路径分类
 （分流/同车普通对照/对照转乘处理/全程 T/全程 C/不执行/两类 UNKNOWN）、
-聚类 ITT 公式、Wilson 区间与 RI 枚举。
+聚类 ITT 公式、Wilson 区间与 RI 枚举；以及新增 `ComplianceStatsTest` 的 5 个用例：
+已知常数 CACE 的 Wald 精确恢复与强工具 F、单调性通过/检出 DEFIER 与司机层完全反向、
+弱工具第一阶段 <0.1 且 F<10、主分层加权恢复效应且重叠、高风险层缺对照时以 `NO_OVERLAP` 拒绝。
 
 ### 2. 端到端不变量脚本（实际执行 ✅）
 
@@ -134,7 +137,7 @@ BUILD SUCCESS
 脚本仅依赖 `bash/curl/python3`（标准库），实际结果：
 
 ```
-通过 34 项，失败 0 项
+通过 60 项，失败 0 项
 ALL_VERIFY_CHECKS_PASSED
 ```
 
@@ -147,13 +150,21 @@ ALL_VERIFY_CHECKS_PASSED
 - 共同支持缺口存在；投诉、滞留两条护栏超限；
 - 投诉确有滞后提交且按 `service_event_time` 关联；
 - analyst 不能调用扩围评估（403）；approver 得到 `BLOCKED`；护栏超限时人工 `GO` 被拒（409）；
-- `/v3/api-docs`、`/swagger-ui/index.html`、前端页面与 `app.js` 均可访问。
+- `/v3/api-docs`、`/swagger-ui/index.html`、前端页面与 `app.js` 均可访问；
+- **区段依从者特性（新增 26 项断言，总计 60）**：主场景 `dual_estimable=true` 且单调/强工具/重叠/支持四门全过；
+  Wald 与主分层 CACE 均为负且满足 `ci_low < estimate < ci_high`；返回“同一依从者人群、不得称为所有完整执行区段效应”的口径声明；
+  11 个 `/compliance...`（含 `/complier-report`、`/cace` 别名）端点 200；资格账存在无资格候选与原因；
+  区段账存在多区段切分；轨迹含 `ASSIGNMENT/RULE_ACTION/OUTCOME` 检查点；偏差图 nodes/links/reasons 与数组样例；
+  三个拒绝场景分别命中 `MONOTONICITY_DEFIERS`（26 个 DEFIER + DRV-077 的 0↔1 反向层）、
+  `WEAK_INSTRUMENT`（F≈6.4）、`NO_OVERLAP`（高约束层缺对照）；`/compliance.js` 可访问；analyst 可 POST 重建。
 
 ### 3. 前端渲染冒烟（实际执行 ✅）
 
-本环境没有浏览器，我用临时目录中的 `jsdom` 对**真实运行的后端**加载 `index.html + app.js`：
-10 个标签页全部成功渲染、命名旅程弹窗输出逐段判定追踪、`CROSS_MIXED` 过滤可交互，
-结果 `UI_SMOKE_OK`，无运行时错误。该冒烟脚本在 `/tmp/uismoke/smoke.mjs`（临时目录，不属于交付物）。
+本环境没有浏览器，我用临时目录中的 `jsdom` 对**真实运行的后端**加载 `index.html + app.js + compliance.js`：
+**11 个标签页全部成功渲染**、命名旅程弹窗输出逐段判定追踪、`CROSS_MIXED` 过滤可交互；
+新增依从者页渲染出 2 个估计卡与约 200 行区段账，点击区段弹出 6 个有序轨迹事件，
+并依次切换 DEFIER/WEAK/OVERLAP 场景确认对应拒绝卡与 `MONOTONICITY/WEAK_INSTRUMENT/NO_OVERLAP` 标记，
+结果 `UI_SMOKE_OK`，无运行时错误。该冒烟脚本在 `/tmp/uismoke/smoke.cjs`（临时目录，不属于交付物）。
 
 ### 4. 我没有执行的验证
 
@@ -205,7 +216,68 @@ ALL_VERIFY_CHECKS_PASSED
 
 ---
 
-## 六、主要 HTTP API
+## 六、区段依从者效应：资格账 · 轨迹 · 偏差图 · 单调性 · 双估计
+
+这是本题的唯一因果目标。分析单元不是整条旅程，而是**区段（segment）**：临时改线/短线折返/加班的班次
+按运行切点拆成多个区段，多个区段共享父班次的同一个随机分流分配 `Z`（工具变量），不另行随机。
+
+### 1. 估计谁：随机分流诱导的依从者（CACE/LATE）
+
+- `Z`：原**随机分流分配**（1=随机分入处理/分流诱导，0=随机对照），严格 50/50、平衡且确定性可复现。
+- `D`：该区段是否**完整执行**新规则（二元；`FULL_EXECUTED=1` / `NOT_EXECUTED=0`）。
+  少量 `PARTIAL`（部分执行）区段保留在资格账、轨迹与偏差图中，但不进入“完整/完整不执行”的二元队列，
+  仅在连续执行剂量 `adherence` 的 Wald 敏感性中使用。
+- 目标人群是主分层 **COMPLIER**：`D(1)=1, D(0)=0`，即“分入处理会被促使完整执行、分入对照则完整不执行”的区段。
+  **两种方法都只报告这同一 Z 诱导依从者人群的平均效应与 95% 区间，绝不称为“所有完整执行区段的平均效应”**——
+  按实际 `D` 分组的均值差只是受执行动机混杂的 `AS_TREATED` 观察性关联。
+
+### 2. 五件交付物与 HTTP 入口（均在 `/api/experiments/{id}` 下，需登录）
+
+| 交付物 | 端点 | 内容 |
+| --- | --- | --- |
+| 总报告/工作包 | `GET /compliance?scenario=` | 估计量定义、门控、双估计、单调性、组成、偏差图、资格汇总、样例区段、四场景矩阵 |
+| 依从者效应报告 | `GET /compliance/report?scenario=` | 仅双估计 + 区间 + 拒绝原因 + 口径纪律 + AS_TREATED 对照 |
+| ① 分流资格账 | `GET /compliance/eligibility` | 合格/无资格候选、六项资格准则 JSON、无资格原因分布（暴雨停运/非试点/车辆不能折返/无折返径路/错过窗口/运能不足） |
+| ② 区段执行轨迹 | `GET /compliance/segments`、`/compliance/trajectories?segmentCode=` | 区段主账（切分序号、Z、主分层类型、执行状态/剂量、偏差、司机/车辆/基线拥堵、结果）与有序检查点时间线 |
+| ③ 偏差原因图 | `GET /compliance/deviation-graph` | `类别(人/车/路/天/调度/规则) → 偏差原因 → 执行状态` 的 nodes/links 加权图 + 原因明细与样例区段 |
+| ④ 单调性诊断 | `GET /compliance/monotonicity` | 臂×完整执行率表、显式 DEFIER 清单、按司机层的负条件第一阶段反例 |
+| Wald-IV | `GET /compliance/wald` | `CACE=ITT_Y/第一阶段`、CR1 聚类 delta 区间、第一阶段稳健 F、连续剂量敏感性 |
+| ⑤ 主分层模型 | `GET /compliance/principal-stratification` | Logistic 拟合 `P(D=1|Z=1,X)` 与 `P(D=1|Z=0,X)`，`c(X)=p1−p0` 为依从概率；组成诊断、重叠、分层 Wald 加权、400 次聚类 bootstrap 区间 |
+| 确定性重建 | `POST /compliance/rebuild` | 分析师及以上；重置同一固定种子并重建两张表与 `analysis_result` 中的三行结果 |
+
+同一组接口另挂 `/complier-report/**` 与 `/cace/**` 别名；OpenAPI 中带中文 `@Operation` 摘要，便于检索。
+前端新增 **“🩺 依从者效应 CACE”** 标签页（`static/compliance.js`），可切换四个场景、点开区段轨迹弹窗。
+
+### 3. 三类“拒绝估计”门控（`scenario=PRIMARY|DEFIER_CASE|WEAK_CASE|OVERLAP_CASE`）
+
+| 门控 | 阈值/判据 | 触发场景的实测 | 服务端行为 |
+| --- | --- | --- | --- |
+| 强工具 | 第一阶段 `|ΔD|≥0.10` 且聚类稳健 **F≥10** | `WEAK_CASE`：ΔD≈0.09、F≈6.4 | Wald 与主分层均 `estimable=false / WEAK_INSTRUMENT`，估计键显式为 `null` |
+| 单调性 | 无显式 DEFIER，且无两臂样本≥6、率差≤−0.18 的司机反向层 | `DEFIER_CASE`：26 个 DEFIER；司机 `DRV-077` 为 Z1 执行率 0、Z0 执行率 1（Δ=−1） | `MONOTONICITY_DEFIERS`，拒绝 Wald（主分层一并拒绝） |
+| 模型重叠 | 5 个风险层中，显著质量层不得缺任一臂；预测依从者规模≥40 | `OVERLAP_CASE`：高拥堵+强约束高峰层被确定性全部分流，最高风险层缺 Z0 | Wald 仍可报；主分层 `estimable=false / NO_OVERLAP`，不输出模型点估计/区间 |
+
+### 4. 主场景的确定性结果（固定种子，重建两次数字完全一致；候车秒，负=改善）
+
+规模：PRIMARY 共 **759** 条资格账行（**687** 合格随机区段 + **72** 无资格候选），合格区段中 **18** 条 PARTIAL，
+二元完整/不完整队列 **669** 区段、**582** 个随机化单元、乘客人权重约 855。
+
+| 方法 | CACE 估计 | SE | 95% 区间 | 关键诊断 |
+| --- | --- | --- | --- | --- |
+| 随机分流 Wald-IV（CR1 聚类 delta） | **约 −102** | ≈10.0 | **[−122, −83]** | 第一阶段 ≈0.47，稳健 **F≈162**，单调成立 |
+| 主分层依从模型加权（聚类 bootstrap） | **约 −106** | bootstrap SE ≈14 | **[−139, −81]** | 预测依从者 ≈44%，5 层均两臂重叠，400/400 次 bootstrap 有效 |
+
+两法区间高度重合、指向同一 Z 诱导依从者人群；数值在重置库/重复 rebuild 后可复现（`Random.setSeed` 每次重建复位）。
+`analysis_result` 另写 `CACE_WALD_SEGMENT`、`CACE_PRINCIPAL_STRAT`、`MONOTONICITY_DIAG` 三行（`design_type=SEGMENT_COMPLIANCE, scope=COMPLIER_LATE`），
+因此 `GET /analysis` 与离线审阅包也包含它们（审阅包新增 `complierReportPrimary`/`complierScenarioMatrix` 键）。
+
+> 统计口径说明：合成 DGP 中结果代价只由基线协变量/外部事件与“和 Z 独立抽取的结构性改线”决定，
+> 刻意避免“Z 改变偏差标签、偏差标签再改变结果”的排他性破坏；未测执行动机 `m` 同时影响依从类型与候车，
+> 因此 AS_TREATED 对比有偏，而随机 Z 的 Wald/IV 仍稳健。真实数据里主分层“类型”不可观测，
+> 其组成与加权有效性依赖 Logistic/分层模型设定正确——这也是题目要求同时报告更稳健的 Wald 并在无重叠时拒绝模型的原因。
+
+---
+
+## 七、主要 HTTP API
 
 所有 `/api/**` 需登录（表单 Cookie 或 Basic）。完整交互文档：`/swagger-ui.html`。
 
@@ -223,24 +295,27 @@ ALL_VERIFY_CHECKS_PASSED
 | `GET /api/experiments/{id}/analysis` | 全部估计结果 |
 | `GET/POST /api/experiments/{id}/guardrails[/evaluate]` | 护栏规则/最新评估/重新评估 |
 | `GET /api/experiments/{id}/expansion`、`POST .../expansion/evaluate|decide` | 扩围证据与结论（APPROVER） |
-| `GET /api/experiments/{id}/review-bundle` | 离线审阅包（冻结配置+分配哈希+追踪+结果） |
+| `GET /api/experiments/{id}/review-bundle` | 离线审阅包（冻结配置+分配哈希+追踪+结果+依从者报告） |
+| `GET /api/experiments/{id}/compliance[/report|/eligibility|/segments|/trajectories|/deviation-graph|/monotonicity|/wald|/principal-stratification]`、`POST .../compliance/rebuild` | **区段依从者 CACE 五件产物与双估计/拒绝门控**；另有 `/complier-report/**`、`/cace/**` 别名，详见第六章 |
 | `GET /api/experiments/{id}/events`、`/complaints` | 外部事件时间线、投诉时间关联核验 |
 
 ---
 
-## 七、目录与实现说明
+## 八、目录与实现说明
 
 ```
 src/main/java/com/ccdev/transit/
   engine/            # 纯逻辑、无 Spring：确定性哈希、平衡分配、网络聚类、路径分类、统计/RI
+                     #   + ComplianceStats：Wald-IV/第一阶段F、单调性反例、Logistic IRLS 主分层、重叠与 bootstrap
   service/           # 登记冻结、确定性播种器、分析流水线、扩围决策
-  web/               # REST 控制器与 DTO
+                     #   + ComplianceService：区段 DGP/资格账/切分轨迹/偏差图/双估计装配与幂等重建
+  web/               # REST 控制器与 DTO（+ ComplianceController，/compliance、/complier-report、/cace 三组别名）
   config/ security/  # Spring Security 三角色、OpenAPI、jsonb 响应处理
 src/main/resources/
-  schema.sql         # 幂等 PostgreSQL 建表
-  static/            # 原生 JS 单页控制台（login/index/app/styles）
-src/test/java/...    # 16 个纯 JUnit 测试（不依赖数据库/Docker）
-verify.sh            # 34 项端到端不变量
+  schema.sql         # 幂等 PostgreSQL 建表（含 compliance_segment、segment_trajectory_event）
+  static/            # 原生 JS 单页控制台（login/index/app/compliance/styles）
+src/test/java/...    # 21 个纯 JUnit 测试（不依赖数据库/Docker，含 ComplianceStatsTest 5 例）
+verify.sh            # 60 项端到端不变量（含区段依从者特性 26 项）
 Dockerfile docker-compose.yml docker-settings.xml
 ```
 
@@ -252,3 +327,7 @@ Dockerfile docker-compose.yml docker-settings.xml
 - **未知保留**：`INCOMPLETE_TAP/MID_ROUTE_CHANGE` 不插补、不归臂、不进效应估计，只计数并进入安全护栏。
 - **共同支持**：无支持层旅程不产生外推结论，仅在支持页与 `gaps` 中报告覆盖缺口。
 - **时间基准**：天气/施工/改线与 `service_ts` 按窗口重叠关联；护栏投诉率按 `complaint.service_event_time` 归集。
+- **依从者口径（本题）**：只报告随机分流 `Z` 诱导的主分层 COMPLIER（`D(1)=1,D(0)=0`）区段 CACE/LATE 及区间；
+  中途改线按区段切分并共享父班次 `Z`；PARTIAL 不混入二元完整/不完整队列；弱工具（F<10 或 |ΔD|<0.10）、
+  单调性反例（DEFIER/显著负条件第一阶段）或主分层无重叠时，对应方法 `estimable=false` 且估计键为显式 `null`，
+  绝不用 AS_TREATED 均值或“所有完整执行区段效应”替代。

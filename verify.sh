@@ -160,6 +160,94 @@ for path in ["/v3/api-docs", "/swagger-ui/index.html", "/index.html", "/login.ht
         ok = False
     check(f"可访问 {path}", ok)
 
+# 11. 区段依从者 CACE/LATE 特性：资格账/轨迹/偏差图/单调性/双估计/三拒绝门控
+st, rep = req("GET", f"/api/experiments/{eid}/compliance/report?scenario=PRIMARY")
+g = rep.get("gates", {}) if isinstance(rep, dict) else {}
+w = rep.get("wald", {}) if isinstance(rep, dict) else {}
+ps = rep.get("principal_stratification", {}) if isinstance(rep, dict) else {}
+check("依从者报告 dual_estimable=true", st == 200 and rep.get("dual_estimable") is True, str(rep)[:200])
+check("主场景门控：单调/强工具/重叠/支持全通过",
+      all([g.get("monotonicity_holds"), g.get("instrument_strong"),
+           g.get("overlap"), g.get("complier_support_ok")]), str(g))
+check("Wald CACE 为负且 95% 区间完整",
+      w.get("estimable") is True and isinstance(w.get("estimate"), (int, float)) and w["estimate"] < 0
+      and w.get("ci_low") is not None and w["ci_low"] < w["estimate"] < w["ci_high"], str(w)[:220])
+check("主分层 CACE 为负且 bootstrap 区间完整",
+      ps.get("estimable") is True and isinstance(ps.get("estimate"), (int, float)) and ps["estimate"] < 0
+      and ps.get("ci_low") is not None and ps["ci_low"] < ps["estimate"] < ps["ci_high"], str(ps)[:220])
+check("两法同一依从者人群且禁止称所有完整执行区段效应",
+      "依从者" in rep.get("same_population_statement", "")
+      and "所有完整执行区段" in rep.get("not_all_fully_executed_warning", ""), "")
+
+api_paths = [
+    "/compliance", "/compliance/report", "/compliance/wald",
+    "/compliance/principal-stratification", "/compliance/monotonicity",
+    "/compliance/deviation-graph", "/compliance/eligibility",
+    "/compliance/segments", "/compliance/trajectories",
+    "/complier-report/report?scenario=PRIMARY", "/cace/monotonicity?scenario=PRIMARY",
+]
+for p in api_paths:
+    st, _ = req("GET", f"/api/experiments/{eid}{p}")
+    check(f"依从者 API 200 {p.split('?')[0]}", st == 200, f"status={st}")
+
+st, elig = req("GET", f"/api/experiments/{eid}/compliance/eligibility?scenario=PRIMARY&limit=1000")
+es = elig.get("summary", {}) if isinstance(elig, dict) else {}
+check("分流资格账含无资格候选与原因",
+      st == 200 and int(es.get("ineligible", 0)) > 0 and len(es.get("ineligible_reasons", [])) > 0, str(es)[:200])
+
+st, segs = req("GET", f"/api/experiments/{eid}/compliance/segments?scenario=PRIMARY&limit=500")
+srows = segs.get("rows", []) if isinstance(segs, dict) else []
+split = [r for r in srows if int(r.get("segment_count") or 1) > 1]
+check("区段账存在中途改线/折返/加班的多区段切分", st == 200 and len(split) > 5, f"split={len(split)}")
+code = split[0]["segment_code"] if split else (srows[0]["segment_code"] if srows else None)
+st, traj = req("GET", f"/api/experiments/{eid}/compliance/trajectories?segmentCode={code}")
+cps = {e.get("checkpoint") for e in traj.get("events", [])} if isinstance(traj, dict) else set()
+check("区段轨迹有序且含分配/规则动作/结果检查点",
+      st == 200 and {"ASSIGNMENT", "RULE_ACTION", "OUTCOME"} <= cps
+      and len(traj.get("events", [])) >= 4, str(sorted(cps)))
+
+st, graph = req("GET", f"/api/experiments/{eid}/compliance/deviation-graph?scenario=PRIMARY")
+gr = graph.get("reasons", []) if isinstance(graph, dict) else []
+check("偏差原因图 nodes/links/reasons 且样例为数组",
+      st == 200 and len(graph.get("nodes", [])) > 5 and len(graph.get("links", [])) > 5
+      and len(gr) >= 5 and all(isinstance(x.get("examples"), list) for x in gr), "")
+
+st, mono = req("GET", f"/api/experiments/{eid}/compliance/monotonicity?scenario=PRIMARY")
+check("主场景单调性成立且无 DEFIER",
+      st == 200 and mono.get("holds") is True and int(mono.get("defier_count", -1)) == 0, str(mono)[:160])
+
+st, dfr = req("GET", f"/api/experiments/{eid}/compliance/report?scenario=DEFIER_CASE")
+check("反例场景：检出 DEFIER/反向层并拒绝 Wald( MONOTONICITY )",
+      isinstance(dfr, dict) and dfr.get("dual_estimable") is False
+      and dfr["gates"].get("monotonicity_holds") is False
+      and int(dfr["gates"].get("defier_count", 0)) > 0
+      and dfr["wald"].get("estimable") is False
+      and any("MONOTONICITY" in x for x in dfr.get("refusal_reasons", [])), str(dfr.get("refusal_reasons"))[:200])
+
+st, wk = req("GET", f"/api/experiments/{eid}/compliance/report?scenario=WEAK_CASE")
+check("弱工具场景：F<10 且拒绝 Wald( WEAK_INSTRUMENT )",
+      isinstance(wk, dict) and wk.get("dual_estimable") is False
+      and wk["gates"].get("instrument_strong") is False
+      and wk["wald"].get("estimable") is False
+      and any("WEAK_INSTRUMENT" in x for x in wk.get("refusal_reasons", [])), str(wk.get("refusal_reasons"))[:200])
+
+st, ov = req("GET", f"/api/experiments/{eid}/compliance/report?scenario=OVERLAP_CASE")
+check("无重叠场景：缺臂且拒绝主分层( NO_OVERLAP )",
+      isinstance(ov, dict) and ov["gates"].get("overlap") is False
+      and ov["principal_stratification"].get("estimable") is False
+      and "NO_OVERLAP" in str(ov["principal_stratification"].get("refusal_reason", "")),
+      str(ov.get("principal_stratification", {}).get("refusal_reason"))[:200])
+
+try:
+    with urllib.request.urlopen(BASE + "/compliance.js", timeout=10) as r:
+        compjs_ok = r.status == 200 and "RENDER.compliance" in r.read().decode("utf-8", "ignore")
+except Exception:
+    compjs_ok = False
+check("/compliance.js 可访问且含依从者渲染模块", compjs_ok)
+
+st, rb = req("POST", f"/api/experiments/{eid}/compliance/rebuild", user="analyst", pwd="analyst123")
+check("analyst 可重建依从者分析(200)", st == 200 and isinstance(rb, dict) and rb.get("ok") is True, f"status={st}")
+
 print(f"\n通过 {len(passes)} 项，失败 {len(fails)} 项")
 if fails:
     print("失败项：" + "; ".join(fails))

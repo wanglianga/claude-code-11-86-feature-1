@@ -328,3 +328,81 @@ CREATE TABLE IF NOT EXISTS load_count (
     capacity       INTEGER,
     load_factor    DOUBLE PRECISION
 );
+
+-- ====================================================================
+-- 区段级“随机分流诱导依从者（CACE/LATE）”特性
+-- 一个区段 = 临时改线/加班后按运行切点切分的最小分析单元；
+-- 中途改线的班次拆成多个区段，共享同一个随机分流工具变量 Z。
+-- ====================================================================
+
+-- 分流资格账 + 区段执行轨迹主表（一行一个区段）
+CREATE TABLE IF NOT EXISTS compliance_segment (
+    id                    BIGSERIAL PRIMARY KEY,
+    experiment_id         BIGINT NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    segment_code          TEXT NOT NULL,
+    scenario              TEXT NOT NULL DEFAULT 'PRIMARY', -- PRIMARY/DEFIER_CASE/WEAK_CASE/OVERLAP_CASE
+    journey_code          TEXT,
+    trip_code             TEXT,
+    unit_key              TEXT,          -- 随机化单元（班次/派发级），用于聚类
+    route_code            TEXT,
+    service_date          DATE,
+    week_index            INTEGER,
+    period_band           TEXT,
+    segment_index         INTEGER NOT NULL DEFAULT 1,
+    segment_count         INTEGER NOT NULL DEFAULT 1,
+    segment_kind          TEXT,          -- FIRST_WAIT/TRANSFER_WAIT/POST_CHANGE
+    mid_route_change      BOOLEAN NOT NULL DEFAULT FALSE,
+    split_from_code       TEXT,
+    overtime              BOOLEAN NOT NULL DEFAULT FALSE,
+    short_turn            BOOLEAN NOT NULL DEFAULT FALSE,
+    -- 分流资格账
+    diversion_eligible    BOOLEAN NOT NULL DEFAULT TRUE,
+    eligibility_status    TEXT NOT NULL DEFAULT 'ELIGIBLE', -- ELIGIBLE/INELIGIBLE
+    ineligible_reason     TEXT,
+    eligibility_checks    TEXT,          -- JSON：各项资格准则
+    -- 随机分流分配（工具变量 Z；无资格者为 NULL）
+    z_assigned            INTEGER,       -- 1=随机分入处理/分流诱导, 0=随机对照
+    assignment_arm        TEXT,          -- TREATMENT/CONTROL
+    assignment_prob       DOUBLE PRECISION,
+    -- 基线协变量（分配前）：基线拥堵、司机约束、车辆约束
+    baseline_congestion   DOUBLE PRECISION,
+    congestion_band       TEXT,          -- LOW/MEDIUM/HIGH
+    driver_id             TEXT,
+    driver_constraint     DOUBLE PRECISION,
+    vehicle_id            TEXT,
+    vehicle_constraint    DOUBLE PRECISION,
+    risk_index            DOUBLE PRECISION,
+    covariate_bin         INTEGER,
+    -- 主分层依从类型（虚构 DGP 已知，仅用于组成审计；真实数据不可观测）
+    principal_type        TEXT,          -- COMPLIER/ALWAYS_TAKER/NEVER_TAKER/DEFIER
+    -- 观测到的区段执行轨迹结果
+    execution_state       TEXT,          -- FULL_EXECUTED/PARTIAL/NOT_EXECUTED
+    d_fully_executed      INTEGER NOT NULL DEFAULT 0, -- 二元处理 D=完整执行
+    adherence_rate        DOUBLE PRECISION NOT NULL DEFAULT 0,
+    partial_reason        TEXT,
+    deviation_code        TEXT NOT NULL DEFAULT 'NONE',
+    deviation_detail      TEXT,
+    -- 结果：区段可归属等候时间（秒）
+    wait_seconds          DOUBLE PRECISION,
+    passenger_weight      INTEGER NOT NULL DEFAULT 1,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (experiment_id, segment_code)
+);
+CREATE INDEX IF NOT EXISTS idx_cseg_exp_scenario ON compliance_segment(experiment_id, scenario);
+CREATE INDEX IF NOT EXISTS idx_cseg_driver ON compliance_segment(experiment_id, driver_id);
+CREATE INDEX IF NOT EXISTS idx_cseg_unit ON compliance_segment(experiment_id, unit_key);
+
+-- 区段执行轨迹的有序检查点（含中途改线切点）
+CREATE TABLE IF NOT EXISTS segment_trajectory_event (
+    id             BIGSERIAL PRIMARY KEY,
+    experiment_id  BIGINT NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    segment_id     BIGINT REFERENCES compliance_segment(id) ON DELETE CASCADE,
+    segment_code   TEXT NOT NULL,
+    seq            INTEGER NOT NULL,
+    checkpoint     TEXT NOT NULL, -- ELIGIBILITY/ASSIGNMENT/DEPARTURE/SPLIT/RULE_ACTION/EXECUTION/OUTCOME
+    status         TEXT,          -- OK/INFO/WARN/DEVIATION
+    label          TEXT,
+    detail         TEXT,
+    event_ts       TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_straj_segment ON segment_trajectory_event(segment_code);
